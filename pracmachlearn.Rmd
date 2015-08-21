@@ -1,0 +1,152 @@
+---
+title: "Pratical Machine Learning"
+author: "lingas"
+date: "Tuesday, August 18, 2015"
+output: html_document
+---
+
+#Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset). 
+
+
+#Data 
+
+The training data for this project are available here: 
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here: 
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+The data for this project come from this source: <http://groupware.les.inf.puc-rio.br/har>. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+```{r}
+library(knitr) 
+opts_chunk$set(cache=TRUE)
+```
+
+#Preparing Data
+```{r}
+
+library(caret)
+library(parallel)
+library(doParallel)
+library(randomForest)
+
+training_ds = read.csv("pml-training.csv", header = TRUE)
+test_ds     = read.csv('pml-testing.csv', header = TRUE)
+
+```
+
+## Removing Non - Predictor Candidate
+1. Informational columns that does not contains predictive data
+2. Columns with more than 90% NAs
+3. Columns which have little or no variance
+
+```{r}
+# Removal of 7 irrelvant columns 
+non_pred = c("X","user_name","raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp","new_window","num_window")
+
+training_ds <- training_ds[,!(names(training_ds) %in% non_pred)]
+test_ds <- test_ds[,!(names(test_ds) %in% non_pred)]
+
+# Removal of columns with more than 90% of NA and columns with no variance
+na_col = apply(training_ds,2,function(x) {sum(is.na(x))});
+training_ds = training_ds[,which(na_col <  nrow(training_ds)*0.9)];  
+
+na_col = apply(test_ds,2,function(x) {sum(is.na(x))});
+test_ds = test_ds[,which(na_col <  nrow(test_ds)*0.9)];  
+
+novar_col = nearZeroVar(training_ds, saveMetrics = TRUE)
+training_ds = training_ds[, novar_col$nzv==FALSE]
+
+nozero_col = nearZeroVar(test_ds, saveMetrics = TRUE)
+test_ds = test_ds[, nozero_col$nzv==FALSE]
+
+```
+
+# Correlation Study (PCA)
+
+Check if there are any variables that are highly correlated. PCA (7-fold) will be used if such data are found.
+```{r}
+correlation <- caret::findCorrelation(cor(training_ds[, -53]), cutoff=0.7)
+names(training_ds)[correlation]
+
+control <- trainControl(method="cv", number=5, verboseIter=FALSE ,preProcOptions="pca", allowParallel=TRUE)
+
+```
+
+# Prepared Data 
+
+Original data contains **160** columns.
+
+Final data contains only **`r ncol(training_ds)`** columns.
+
+# Split data for cross validation 
+
+Create a 60%(training data) to 40% (probing data) data set for cross validation.
+```{r}
+# Seed is set for repeatability
+set.seed(19622)
+partition = createDataPartition(y = training_ds$classe, p = 0.6, list = FALSE)
+pri_training   = training_ds[partition,]
+prode_training = training_ds[-partition,]
+```
+
+# Training the Model
+
+```{r}
+
+#Less 1 core to prevent hodging of all CPU resources
+core_to_use = makeCluster(detectCores() - 1)
+registerDoParallel(core_to_use)
+
+model_rf = train(classe ~ ., method="rf", data=pri_training,trControl= control)    
+
+stopCluster(core_to_use)
+
+predict = predict(model_rf, prode_training)
+print(confusionMatrix(predict, prode_training$classe))
+```
+
+# Variable Importance Plot
+
+```{r}
+plot(varImp(model_rf,scale=T), main = "Variable Importance Plot")
+```
+
+As seen from the plot , only 7 variables have an importance index of more than 50. 
+
+# Cross Validation and Out of Sample Error 
+
+*Accuracy of the model* is `r postResample(predict, prode_training$classe) *100 ` %.
+
+*Out of Sample Error Rate* is `r (1 - as.numeric(confusionMatrix(prode_training$classe, predict)$overall[1])) * 100` %. 
+
+# Test Model on Test Dataset
+
+```{r}
+prediction_result <- predict(model_rf, test_ds, type = "raw")
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(prediction_result)
+```
+
+
+Due to limited computing power (i3 core , 4 GB Ram laptop) ,comparison between e different algos are not explored.
+
+Reader can futher investigate and compare the result between the different training algo such as *Boosted Tree* and *Linear Discriminant Analysis*. 
+
+**Following codes are not excuted as part of the report**
+```{r}
+#model2_lda = train(classe ~ ., method = 'lda', data = pri_training, trControl= control) 
+#model3_gbm = train(classe ~ ., method = 'gbm', data = pri_training, trControl= control)
+```
+
